@@ -1,0 +1,23 @@
+#  “alpha-client can send TCP 5678 traffic to pods labeled app=server, team=alpha in 
+#   the same namespace.” It restores the outbound leg that default‑deny egress had removed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-alpha-allow-client-egress-to-server
+  namespace: team-alpha
+spec:
+  podSelector:
+    matchLabels:
+      app: client
+      team: alpha
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: server
+          team: alpha
+    ports:
+    - protocol: TCP
+      port: 5678

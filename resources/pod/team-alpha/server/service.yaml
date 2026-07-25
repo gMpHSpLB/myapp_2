@@ -1,0 +1,21 @@
+# We’re not creating a Service for alpha-server / beta-server.
+#   - Kubernetes DNS for services is based on Service objects, not pods.
+#   - curl http://alpha-server:5678 expects a Service named alpha-server in the same namespace; you only have a Pod named alpha-server.
+#   - Without a Service, DNS for alpha-server doesn’t exist, so curl can’t resolve it.
+#
+# With these, Kubernetes will create ClusterIP Services and DNS entries like:
+#     alpha-server.team-alpha.svc.cluster.local
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: alpha-server
+  namespace: team-alpha
+spec:
+  selector:
+    app: server
+    team: alpha
+  ports:
+  - name: http
+    port: 5678
+    targetPort: 5678

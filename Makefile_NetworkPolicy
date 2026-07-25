@@ -1,0 +1,235 @@
+SHELL := /bin/bash
+
+# ------------------------------------------------------------------------------
+# Global config: namespaces for this tutorial
+# ------------------------------------------------------------------------------
+NAMESPACE_ALPHA := team-alpha
+NAMESPACE_BETA  := team-beta
+
+RED    := \033[1;31m
+YELLOW := \033[1;33m
+GREEN  := \033[1;32m
+CYAN   := \033[1;36m
+RESET  := \033[0m
+
+# ------------------------------------------------------------------------------
+# Explicitly check CNI before proceeding
+# Creating a NetworkPolicy resource without a controller that implements it will
+# have no effect. You need Calico / Cilium / Antrea / Weave, etc. [web:2][web:24]
+# ------------------------------------------------------------------------------
+.PHONY: check-netpol-support
+check-netpol-support: ## Check if CNI supports NetworkPolicy (Calico/Cilium/Antrea/etc.).
+	@echo "Checking for NetworkPolicy-capable CNI in kube-system..."
+	@kubectl get pods -n kube-system | grep -Ei 'calico|cilium|antrea|weave' || \
+		( printf '$(RED)%s$(RESET)\n' \
+			"ERROR: No NetworkPolicy-capable CNI detected (Calico/Cilium/Antrea/etc.)." \
+			"       NetworkPolicy YAML will be accepted but NOT enforced." \
+			"       For Minikube, restart with: minikube start --cni=calico"; \
+		  exit 1 )
+
+# ------------------------------------------------------------------------------
+# Apply: namespaces
+# ------------------------------------------------------------------------------
+.PHONY: apply-namespaces
+apply-namespaces: ## Apply namespaces team-alpha and team-beta (no NetworkPolicy yet).
+	# File: resources/namespace/team-namespaces.yaml
+	#  - Namespace: team-alpha
+	#  - Namespace: team-beta
+	kubectl apply -f resources/namespace/team-namespaces.yaml
+
+# ------------------------------------------------------------------------------
+# Apply: pods in both namespaces
+# ------------------------------------------------------------------------------
+.PHONY: apply-pods
+apply-pods: ## Apply server/client pods in team-alpha and team-beta, then wait until Ready.
+	# Apply team-alpha pods:
+	kubectl apply -f resources/pod/$(NAMESPACE_ALPHA)/server/pod.yaml
+	kubectl apply -f resources/pod/$(NAMESPACE_ALPHA)/server/service.yaml
+	kubectl apply -f resources/pod/$(NAMESPACE_ALPHA)/client/pod.yaml
+
+	# Apply team-beta pods:
+	kubectl apply -f resources/pod/$(NAMESPACE_BETA)/server/pod.yaml
+	kubectl apply -f resources/pod/$(NAMESPACE_BETA)/server/service.yaml
+	kubectl apply -f resources/pod/$(NAMESPACE_BETA)/client/pod.yaml
+
+	# Wait for pods to be Ready (Services are instant once pods exist).
+	kubectl wait --for=condition=Ready pod/alpha-server -n $(NAMESPACE_ALPHA) --timeout=120s
+	kubectl wait --for=condition=Ready pod/alpha-client -n $(NAMESPACE_ALPHA) --timeout=120s
+	kubectl wait --for=condition=Ready pod/beta-server  -n $(NAMESPACE_BETA)  --timeout=120s
+	kubectl wait --for=condition=Ready pod/beta-client  -n $(NAMESPACE_BETA)  --timeout=120s
+
+# ------------------------------------------------------------------------------
+# Apply: default-deny policies in both namespaces
+# ------------------------------------------------------------------------------
+.PHONY: apply-default-deny
+apply-default-deny: ## Apply default-deny ingress+egress in team-alpha and team-beta.
+	# Each default-deny policy:
+	#  - apiVersion: networking.k8s.io/v1
+	#  - kind: NetworkPolicy
+	#  - podSelector: {}  -> selects ALL pods in the namespace
+	#  - policyTypes:     -> both Ingress and Egress
+	#  - no ingress/egress rules -> deny everything by default
+	#
+	# Once a pod is selected by a NetworkPolicy, it only accepts connections
+	# explicitly allowed by *some* policy; everything else is denied. [web:2][web:24]
+	kubectl apply -f resources/netpol/team-alpha-default-deny-all.yaml
+	kubectl apply -f resources/netpol/team-beta-default-deny-all.yaml
+
+	# Optional: show policies after default-deny
+	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
+	kubectl get networkpolicy -n $(NAMESPACE_BETA)
+
+# ------------------------------------------------------------------------------
+# Apply: least-privilege bundle for team-alpha (client -> server + DNS egress)
+# ------------------------------------------------------------------------------
+.PHONY: apply-least-privilege
+apply-least-privilege: ## Allow alpha-client -> alpha-server + DNS egress in team-alpha.
+	# Ingress: alpha-client -> alpha-server on TCP 5678
+	kubectl apply -f resources/netpol/team-alpha-allow-client-to-server.yaml
+
+	# Egress: alpha-client -> alpha-server on TCP 5678
+	kubectl apply -f resources/netpol/team-alpha-allow-client-egress-to-server.yaml
+
+	# Egress: all alpha pods -> CoreDNS (kube-dns) on TCP/UDP 53
+	kubectl apply -f resources/netpol/team-alpha-allow-dns-egress.yaml
+
+	# 1. Check DNS resolution from alpha-client
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		nslookup alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local
+
+	# 2. Direct IP curl: alpha-client -> alpha-server ClusterIP, TCP 5678
+	ALPHA_IP=$(kubectl get svc alpha-server -n team-alpha -o jsonpath='{.spec.clusterIP}')
+	kubectl exec -n team-alpha alpha-client -- sh -c "curl -sS --max-time 3 http://${ALPHA_IP}:5678"
+
+# ------------------------------------------------------------------------------
+# Apply: least-privilege allow for team-alpha (client -> server) – standalone
+# ------------------------------------------------------------------------------
+.PHONY: apply-allow-client-to-server
+apply-allow-client-to-server: ## Allow only team-alpha client to reach team-alpha server on TCP 5678.
+	# Effect:
+	#  - alpha-client  -> alpha-server on TCP 5678: ALLOWED
+	#  - beta-client   -> alpha-server: BLOCKED (namespace isolation)
+	#  - any other pod -> alpha-server: BLOCKED
+	kubectl apply -f resources/netpol/team-alpha-allow-client-to-server.yaml
+
+# ------------------------------------------------------------------------------
+# Apply: DNS egress for team-alpha (optional standalone)
+# ------------------------------------------------------------------------------
+.PHONY: apply-allow-dns-egress
+apply-allow-dns-egress: ## Allow DNS egress from team-alpha pods (labels may need adjustment).
+	# NOTE: The actual labels for your cluster's DNS pods may differ.
+	# Adjust namespaceSelector/podSelector if needed. [web:2][web:24]
+	kubectl apply -f resources/netpol/team-alpha-allow-dns-egress.yaml
+
+# ------------------------------------------------------------------------------
+# Test: baseline connectivity (NO NetworkPolicy applied yet)
+# ------------------------------------------------------------------------------
+.PHONY: test-baseline-connectivity
+test-baseline-connectivity: ## Test connectivity before any NetworkPolicy (expect ALLOWED everywhere).
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Baseline: NO NetworkPolicy ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> alpha-server (same namespace, expect ALLOWED)"
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		curl -sS --max-time 3 http://alpha-server:5678 || \
+		printf '$(RED)%s$(RESET)\n' "FAILED (unexpected; should be allowed)"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server (same namespace, expect ALLOWED)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://beta-server:5678 || \
+		printf '$(RED)%s$(RESET)\n' "FAILED (unexpected; should be allowed)"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 3: beta-client -> alpha-server (cross-namespace, expect ALLOWED by default)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local:5678 || \
+		printf '$(RED)%s$(RESET)\n' "FAILED (unexpected; should be allowed)"
+
+# ------------------------------------------------------------------------------
+# Test: connectivity under default-deny in both namespaces
+# ------------------------------------------------------------------------------
+.PHONY: test-default-deny-connectivity
+test-default-deny-connectivity: ## Test connectivity with default-deny in place (expect BLOCKED everywhere).
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Default-deny: team-alpha and team-beta ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> alpha-server (same namespace, expect BLOCKED)"
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		curl -sS --max-time 3 http://alpha-server:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED (UNEXPECTED: traffic allowed)" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server (same namespace, expect BLOCKED)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://beta-server:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED (UNEXPECTED: traffic allowed)" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 3: beta-client -> alpha-server (cross-namespace, expect BLOCKED)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED (UNEXPECTED: traffic allowed)" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+# ------------------------------------------------------------------------------
+# Test: connectivity after least-privilege allow for team-alpha
+# ------------------------------------------------------------------------------
+.PHONY: test-least-privilege-connectivity
+test-least-privilege-connectivity: ## Test least-privilege: only alpha-client -> alpha-server is allowed.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Least-privilege: allow ONLY alpha-client -> alpha-server on TCP 5678 ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> alpha-server (expect ALLOWED)"
+
+	# Show policies in team-alpha
+	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
+
+	# Describe each policy
+	kubectl describe networkpolicy -n $(NAMESPACE_ALPHA) team-alpha-default-deny-all
+	kubectl describe networkpolicy -n $(NAMESPACE_ALPHA) team-alpha-allow-client-to-server
+	kubectl describe networkpolicy -n $(NAMESPACE_ALPHA) team-alpha-allow-client-egress-to-server
+	kubectl describe networkpolicy -n $(NAMESPACE_ALPHA) team-alpha-allow-dns-egress
+
+	# Show pod and service labels
+	kubectl get pods -n $(NAMESPACE_ALPHA) --show-labels
+	kubectl get svc  -n $(NAMESPACE_ALPHA) -o wide --show-labels
+
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		curl -sS --max-time 3 http://alpha-server:5678 && \
+		printf '$(GREEN)%s$(RESET)\n' "OK: allowed as expected" || \
+		printf '$(RED)%s$(RESET)\n' "FAILED: should be allowed"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server (expect BLOCKED: no allow policy in team-beta)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://beta-server:5678 && \
+		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: traffic allowed" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 3: beta-client -> alpha-server (expect BLOCKED: cross-namespace still denied)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local:5678 && \
+		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: traffic allowed" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+# ------------------------------------------------------------------------------
+# Test: DNS connectivity from team-alpha (optional)
+# ------------------------------------------------------------------------------
+.PHONY: test-dns-connectivity
+test-dns-connectivity: ## Test DNS behavior from team-alpha pods (effect depends on DNS policy + labels).
+	@printf '$(YELLOW)%s$(RESET)\n' "=== DNS connectivity from team-alpha ==="
+	@printf '$(CYAN)%s$(RESET)\n' "Test: alpha-client -> external HTTPS endpoint (requires DNS + egress)"
+
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		sh -c 'curl -sS --max-time 5 https://example.com >/dev/null' && \
+		echo "Result: DNS + egress appear to be ALLOWED from team-alpha (policy + labels matched)." || \
+		echo "Result: DNS and/or egress still BLOCKED (adjust DNS NetworkPolicy or labels)."
+
+# ------------------------------------------------------------------------------
+# Cleanup: remove namespaces (and everything inside them)
+# ------------------------------------------------------------------------------
+.PHONY: cleanup
+cleanup: ## Delete namespaces team-alpha and team-beta and all related resources.
+	kubectl delete namespace $(NAMESPACE_ALPHA) --ignore-not-found=true
+	kubectl delete namespace $(NAMESPACE_BETA)  --ignore-not-found=true

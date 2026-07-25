@@ -1,0 +1,17 @@
+# Default-deny for both namespaces
+#
+# An empty podSelector: {} selects all pods in the namespace; 
+# combining that with both Ingress and Egress policy types and 
+# no rules produces a true default‑deny baseline. This pattern 
+# is documented in the Kubernetes docs and widely used in security guides.
+# “deny all ingress and egress for all pods in the namespace” pattern.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-beta-default-deny-all
+  namespace: team-beta
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress

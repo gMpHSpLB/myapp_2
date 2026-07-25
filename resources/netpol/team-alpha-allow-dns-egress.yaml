@@ -1,0 +1,36 @@
+# Optional DNS egress for team-alpha
+# If you want to show that DNS is blocked by default and 
+# must be explicitly allowed, you can add:
+#
+# Label values for DNS pods vary; the general idea 
+# (allow egress to DNS on port 53) matches how zero‑trust 
+# tutorials handle DNS under default‑deny.
+#
+# Notes:
+#   - This allows DNS traffic to any pod in kube-system on port 53; 
+#     Calico will see this as allowed egress while everything else stays blocked.
+#   - In many clusters, CoreDNS runs under kube-system and listens on these ports, 
+#     so this pattern works reliably.
+#
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-alpha-allow-dns-egress
+  namespace: team-alpha
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53

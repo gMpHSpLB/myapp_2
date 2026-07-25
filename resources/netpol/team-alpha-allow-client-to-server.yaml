@@ -1,0 +1,29 @@
+# Least-privilege allow in team-alpha
+# Only allow alpha-client to talk to alpha-server on port 5678.
+#
+# This follows the canonical recipe: select the destination pods 
+# with podSelector, then define from plus ports that describe the 
+# permitted traffic. Policies are additive; the allowed traffic is 
+# the union of all ingress and egress rules matching the pod.
+# "alpha-server will accept incoming TCP 5678 from pods labeled app=client, team=alpha in the same namespace.""
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-alpha-allow-client-to-server
+  namespace: team-alpha
+spec:
+  podSelector:
+    matchLabels:
+      app: server
+      team: alpha
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: client
+          team: alpha
+    ports:
+    - protocol: TCP
+      port: 5678
