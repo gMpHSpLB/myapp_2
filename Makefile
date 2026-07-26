@@ -97,6 +97,9 @@ step-5-apply-dns-egress-and-test: ## Step 5: (Optional) Apply DNS egress policy 
 	read -r _; \
 	$(MAKE) -f Makefile_NetworkPolicy test-dns-connectivity || true
 
+
+# You have a combined path:
+# 	baseline → combined default-deny-all → least-privilege.
 .PHONY: run-networkpolicy-default-deny-playbook
 run-networkpolicy-default-deny-playbook: setup-minikube ## Run full guided playbook (calls step-0..step-5 in order, each with user input).
 	@printf '$(CYAN)%s$(RESET)\n' "Running guided NetworkPolicy default-deny + least-privilege playbook..."; \
@@ -107,3 +110,34 @@ run-networkpolicy-default-deny-playbook: setup-minikube ## Run full guided playb
 	$(MAKE) step-3-apply-default-deny-and-test; \
 	$(MAKE) step-4-apply-alpha-allow-and-test; \
 	$(MAKE) step-5-apply-dns-egress-and-test
+
+
+# What you’ll see when you run the new playbook
+# 	After Ingress-only default-deny:
+# 		- No one (alpha-client, beta-client) can reach alpha-server.
+# 		- alpha pods can still call other pods (e.g., alpha-client → beta-server).
+
+# 	After Egress-only default-deny:
+# 		- alpha-client can no longer call alpha-server, DNS, or external endpoints.
+# 		- beta-client can still call alpha-server (unless ingress default-deny is also present).
+.PHONY: run-networkpolicy-ingress-egress-playbook
+run-networkpolicy-ingress-egress-playbook: setup-minikube ## Explore INGRESS-only and EGRESS-only default-deny in team-alpha.
+	@printf '$(YELLOW)%s$(RESET)\n' "Step A0. Reset lab and apply namespaces/pods..."
+	$(MAKE) -f Makefile_NetworkPolicy cleanup
+	$(MAKE) -f Makefile_NetworkPolicy apply-namespaces
+	$(MAKE) -f Makefile_NetworkPolicy apply-pods
+	$(MAKE) -f Makefile_NetworkPolicy test-baseline-connectivity
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step A1. Apply INGRESS-only default-deny in team-alpha..."
+	$(MAKE) -f Makefile_NetworkPolicy apply-alpha-default-deny-ingress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step A2. Test behavior under INGRESS-only default-deny..."
+	$(MAKE) -f Makefile_NetworkPolicy test-alpha-default-deny-ingress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step A3. Apply EGRESS-only default-deny in team-alpha..."
+	$(MAKE) -f Makefile_NetworkPolicy apply-alpha-default-deny-egress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Debug alpha-server wiring..."
+	$(MAKE) -f Makefile_NetworkPolicy debug-alpha-server
+	@printf '$(YELLOW)%s$(RESET)\n' "Step A4. Test behavior under EGRESS-only default-deny..."
+	$(MAKE) -f Makefile_NetworkPolicy test-alpha-default-deny-egress

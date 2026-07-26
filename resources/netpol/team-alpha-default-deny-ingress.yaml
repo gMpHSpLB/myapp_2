@@ -1,0 +1,11 @@
+# netpol/team-alpha-default-deny-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-alpha-default-deny-ingress
+  namespace: team-alpha
+spec:
+  podSelector: {}        # all pods in team-alpha
+  policyTypes:
+  - Ingress
+  # No ingress rules => deny ALL incoming traffic to selected pods. [web:2][web:120]

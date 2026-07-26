@@ -1,0 +1,11 @@
+# netpol/team-alpha-default-deny-egress.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: team-alpha-default-deny-egress
+  namespace: team-alpha
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  # No egress rules => deny ALL outgoing traffic from selected pods. [web:2][web:120][web:121]

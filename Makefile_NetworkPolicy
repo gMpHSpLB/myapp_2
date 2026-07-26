@@ -80,6 +80,32 @@ apply-default-deny: ## Apply default-deny ingress+egress in team-alpha and team-
 	kubectl get networkpolicy -n $(NAMESPACE_BETA)
 
 # ------------------------------------------------------------------------------
+# Apply: Apply ingress-only default-deny
+# “default-deny ingress” : all alpha pods now reject incoming connections unless 
+#						   some other ingress policy allows them
+# ------------------------------------------------------------------------------
+.PHONY: apply-alpha-default-deny-ingress
+apply-alpha-default-deny-ingress: ## Default-deny INGRESS only in team-alpha.
+	# Block all incoming traffic to alpha pods; egress remains open. [web:2][web:1]
+	kubectl apply -n $(NAMESPACE_ALPHA) -f resources/netpol/team-alpha-default-deny-ingress.yaml
+
+	# Show policy so we can confirm it's applied.
+	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
+
+# ------------------------------------------------------------------------------
+# Apply: Apply egress-only default-deny
+# 	This isolates alpha pods for egress; they can no longer call anything 
+#	(other pods, services, external IPs, DNS) unless an egress policy allows it.
+# ------------------------------------------------------------------------------
+.PHONY: apply-alpha-default-deny-egress
+apply-alpha-default-deny-egress: ## Default-deny EGRESS only in team-alpha.
+	# Block all outgoing traffic from alpha pods; ingress remains governed by existing policies. [web:2][web:1][web:128]
+	kubectl apply -n $(NAMESPACE_ALPHA) -f resources/netpol/team-alpha-default-deny-egress.yaml
+
+	# Show policy.
+	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
+
+# ------------------------------------------------------------------------------
 # Apply: least-privilege bundle for team-alpha (client -> server + DNS egress)
 # ------------------------------------------------------------------------------
 .PHONY: apply-least-privilege
@@ -171,6 +197,89 @@ test-default-deny-connectivity: ## Test connectivity with default-deny in place 
 		curl -sS --max-time 3 http://alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local:5678 && \
 		printf '$(RED)%s$(RESET)\n' "FAILED (UNEXPECTED: traffic allowed)" || \
 		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+# ------------------------------------------------------------------------------
+# Test: behavior under ingress-only default-deny
+#	Under this policy:
+#		alpha pods cannot be reached,
+#		but alpha pods can still call out to others.
+# ------------------------------------------------------------------------------
+.PHONY: test-alpha-default-deny-ingress
+test-alpha-default-deny-ingress: ## Test alpha behavior with INGRESS-only default-deny.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== team-alpha: INGRESS default-deny (Egress still open) ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> alpha-server:5678/TCP (expect BLOCKED: ingress denied)"
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		curl -sS --max-time 3 http://alpha-server:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED: alpha-server ingress should be denied" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> alpha-server:5678/TCP (expect BLOCKED: ingress denied)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 3 http://alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED: alpha-server ingress should be denied" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 3: alpha-client -> beta-server:5678/TCP (expect ALLOWED: egress still open)"
+	BETA_IP=$$(kubectl get svc beta-server -n $(NAMESPACE_BETA) -o jsonpath='{.spec.clusterIP}'); \
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		sh -c "curl -sS --max-time 3 http://$${BETA_IP}:5678" && \
+		printf '$(GREEN)%s$(RESET)\n' "OK: allowed (only ingress to alpha is denied)" || \
+		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: alpha egress should still be open"
+# ------------------------------------------------------------------------------
+# Test: behavior under egress-only default-deny
+#	Under this policy:
+#		alpha pods can still receive connections (if ingress allows),
+#		but alpha pods cannot call out, including DNS.
+# 
+# Because egress is denied, the alpha-client cannot initiate traffic out, 
+# so DNS and external HTTP(S) will fail unless you add an egress allow rule 
+# such as team-alpha-allow-dns-egress.yaml
+# ------------------------------------------------------------------------------
+.PHONY: debug-alpha-server
+debug-alpha-server: ## Show alpha-server Service, Endpoints, and pod readiness.
+	@echo "=== alpha-server service ==="
+	kubectl get svc alpha-server -n $(NAMESPACE_ALPHA) -o wide
+
+	@echo
+	@echo "=== alpha-server endpoints ==="
+	kubectl get endpoints alpha-server -n $(NAMESPACE_ALPHA) -o wide
+
+	@echo
+	@echo "=== team-alpha pods ==="
+	kubectl get pods -n $(NAMESPACE_ALPHA) -o wide --show-labels
+
+	@echo
+	@echo "=== alpha-server pod description ==="
+	kubectl describe pod alpha-server -n $(NAMESPACE_ALPHA)
+
+.PHONY: test-alpha-default-deny-egress
+test-alpha-default-deny-egress: ## Test alpha behavior with EGRESS-only default-deny.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== team-alpha: EGRESS default-deny (Ingress may still be open) ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> alpha-server:5678/TCP (expect BLOCKED: egress denied)"
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		curl -sS --max-time 3 http://alpha-server:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED: alpha-client egress should be denied" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> alpha-server:5678/TCP (expect BLOCKED: alpha ingress is denied)"
+	ALPHA_IP=$$(kubectl get svc alpha-server -n $(NAMESPACE_ALPHA) -o jsonpath='{.spec.clusterIP}'); \
+	echo "ALPHA_IP=$${ALPHA_IP}"; \
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -v --connect-timeout 3 --max-time 5 http://$${ALPHA_IP}:5678 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED: alpha ingress should be denied" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 3: alpha-client -> DNS / external (expect BLOCKED: egress denied)"
+	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
+		sh -c 'nslookup alpha-server.$(NAMESPACE_ALPHA).svc.cluster.local || curl -sS --max-time 3 https://example.com >/dev/null' && \
+		printf '$(RED)%s$(RESET)\n' "FAILED: alpha egress should be denied (including DNS/external)" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected (egress denied)"
 
 # ------------------------------------------------------------------------------
 # Test: connectivity after least-privilege allow for team-alpha
