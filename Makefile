@@ -111,7 +111,7 @@ run-networkpolicy-default-deny-playbook: setup-minikube ## Run full guided playb
 	$(MAKE) step-4-apply-alpha-allow-and-test; \
 	$(MAKE) step-5-apply-dns-egress-and-test
 
-
+# ---------------------------------------------------------------------------------------------------
 # What you’ll see when you run the new playbook
 # 	After Ingress-only default-deny:
 # 		- No one (alpha-client, beta-client) can reach alpha-server.
@@ -120,6 +120,7 @@ run-networkpolicy-default-deny-playbook: setup-minikube ## Run full guided playb
 # 	After Egress-only default-deny:
 # 		- alpha-client can no longer call alpha-server, DNS, or external endpoints.
 # 		- beta-client can still call alpha-server (unless ingress default-deny is also present).
+# ---------------------------------------------------------------------------------------------------
 .PHONY: run-networkpolicy-ingress-egress-playbook
 run-networkpolicy-ingress-egress-playbook: setup-minikube ## Explore INGRESS-only and EGRESS-only default-deny in team-alpha.
 	@printf '$(YELLOW)%s$(RESET)\n' "Step A0. Reset lab and apply namespaces/pods..."
@@ -139,5 +140,65 @@ run-networkpolicy-ingress-egress-playbook: setup-minikube ## Explore INGRESS-onl
 
 	@printf '$(YELLOW)%s$(RESET)\n' "Debug alpha-server wiring..."
 	$(MAKE) -f Makefile_NetworkPolicy debug-alpha-server
+	
 	@printf '$(YELLOW)%s$(RESET)\n' "Step A4. Test behavior under EGRESS-only default-deny..."
 	$(MAKE) -f Makefile_NetworkPolicy test-alpha-default-deny-egress
+
+# --------------------------------------------------------------------------------------------------
+#					playbook for myapp + Netpol
+# -------------------------------------------------------------------------------------------------
+.PHONY: run-myapp-least-privilege-playbook
+run-myapp-least-privilege-playbook: setup-minikube ## Deploy myapp via Helm and enforce least-privilege NetworkPolicies.
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M0. Reset lab and apply namespaces/pods..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Deleting the namespaces will automatically delete myapp, dummy Postgres, NetworkPolicies, Services, etc";\
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy cleanup
+	$(MAKE) -f Makefile_NetworkPolicy apply-namespaces
+	$(MAKE) -f Makefile_NetworkPolicy apply-pods
+	$(MAKE) -f Makefile_NetworkPolicy test-baseline-connectivity
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M0.0.1 Install/upgrade myapp into team-alpha...";\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M0..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_Myapp myapp-install
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M0.0.2. Install dummy Postgres into team-alpha...";\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M0.0.1..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_Myapp postgres-install
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M0.3. Validate the ingress controller, myapp service/pods, and Postgres service/pods are present and wired correctly..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M0.3..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy debug-myapp-env
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M1. Apply default-deny for team-alpha (Ingress+Egress)..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M1.."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy apply-default-deny
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M2. Apply myapp-specific ingress/egress allow policies..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M2..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy apply-myapp-netpol; \
+    $(MAKE) -f Makefile_NetworkPolicy apply-myapp-allow-external-payment-api
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M3. Test myapp ingress (only ingress-nginx allowed)..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M3..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy test-myapp-ingress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M4. Test myapp egress (only Postgres:5432 allowed)..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M4..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy test-myapp-egress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step M5. Create debug pod and test myapp external payment API egress (ipBlock)..." ;\
+    printf '$(CYAN)%s$(RESET)\n' "Press ENTER to Step M5..."; \
+    read -r _; \
+    $(MAKE) -f Makefile_NetworkPolicy create-myapp-debug; \
+    $(MAKE) -f Makefile_NetworkPolicy test-myapp-external-api-egress;
+
+	@printf '$(CYAN)%s$(RESET)\n' "Press ENTER to delete myapp-debug pod..."; \
+    read -r _; \
+    $(MAKE) -f Makefile_NetworkPolicy delete-myapp-debug

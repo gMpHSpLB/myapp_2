@@ -1,0 +1,34 @@
+# External payment API egress (ipBlock)
+#     We use an ipBlock egress rule to allow myapp to call a third-party 
+#     payment API over HTTPS (TCP 443) in a specific CIDR range, with one 
+#     IP excluded. This demonstrates how to control outbound traffic to 
+#     external services using IP-based policies, which introduces a maintenance 
+#     responsibility whenever those external IP ranges change.
+#
+# What this does:
+#   - Selects pods labeled app=myapp in team-alpha.
+#   - Allows egress on TCP port 443 to IPs in 203.0.113.0/24, except 203.0.113.5.
+#   - Any other external egress from myapp is still controlled by your other policies + default-deny.
+# In a real environment, you would replace:
+#  - 203.0.113.0/24 with the published CIDR of your actual provider (Stripe, Razorpay, internal gateway, etc.).
+#  - 203.0.113.5/32 with a specific IP you want to exclude if needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: myapp-allow-external-payment-api
+  namespace: team-alpha
+spec:
+  podSelector:
+    matchLabels:
+      app: myapp
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.0/24        # external payment API CIDR (example)
+            except:
+              - 203.0.113.5/32          # excluded IP in that range (example)
+      ports:
+        - protocol: TCP
+          port: 443

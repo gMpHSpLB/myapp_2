@@ -1,0 +1,22 @@
+# Key point: kubernetes.io/metadata.name is an automatic label on every 
+# namespace equal to its name, so this namespaceSelector targets exactly 
+# the ingress-nginx namespace without manual labels
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: myapp-allow-ingress
+  namespace: team-alpha
+spec:
+  podSelector:
+    matchLabels:
+      app: myapp
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80

@@ -1,0 +1,1 @@
+External myapp NetworkPolicy YAML

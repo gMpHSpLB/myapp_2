@@ -1,0 +1,63 @@
+# Minimal dummy Postgres for the lab
+# Create a very simple Postgres‑like endpoint in team-alpha that:
+#   - Has a Service named postgres.
+#   - Exposes port 5432/TCP.
+#   - Has at least one pod with label app=postgres.
+#
+# This is enough for NetworkPolicy testing, 
+# even if the pod just runs nc -lk 5432 instead of a full database.
+#
+# This creates:
+#   - Service postgres in team-alpha with port 5432.
+#   - Deployment postgres with pods labeled app=postgres.
+# That matches the assumptions in your egress Netpol (podSelector.matchLabels.app: postgres)
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: team-alpha
+  labels:
+    app: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: team-alpha
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_PASSWORD
+              value: examplepassword
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

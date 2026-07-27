@@ -5,6 +5,7 @@ SHELL := /bin/bash
 # ------------------------------------------------------------------------------
 NAMESPACE_ALPHA := team-alpha
 NAMESPACE_BETA  := team-beta
+MYAPP_NS       	:= $(NAMESPACE_ALPHA)
 
 RED    := \033[1;31m
 YELLOW := \033[1;33m
@@ -72,8 +73,8 @@ apply-default-deny: ## Apply default-deny ingress+egress in team-alpha and team-
 	#
 	# Once a pod is selected by a NetworkPolicy, it only accepts connections
 	# explicitly allowed by *some* policy; everything else is denied. [web:2][web:24]
-	kubectl apply -f resources/netpol/team-alpha-default-deny-all.yaml
-	kubectl apply -f resources/netpol/team-beta-default-deny-all.yaml
+	kubectl apply -f resources/netpol/team-alpha/team-alpha-default-deny-all.yaml
+	kubectl apply -f resources/netpol/team-beta/team-beta-default-deny-all.yaml
 
 	# Optional: show policies after default-deny
 	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
@@ -87,7 +88,7 @@ apply-default-deny: ## Apply default-deny ingress+egress in team-alpha and team-
 .PHONY: apply-alpha-default-deny-ingress
 apply-alpha-default-deny-ingress: ## Default-deny INGRESS only in team-alpha.
 	# Block all incoming traffic to alpha pods; egress remains open. [web:2][web:1]
-	kubectl apply -n $(NAMESPACE_ALPHA) -f resources/netpol/team-alpha-default-deny-ingress.yaml
+	kubectl apply -n $(NAMESPACE_ALPHA) -f resources/netpol/team-alpha/team-alpha-default-deny-ingress.yaml
 
 	# Show policy so we can confirm it's applied.
 	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
@@ -100,7 +101,7 @@ apply-alpha-default-deny-ingress: ## Default-deny INGRESS only in team-alpha.
 .PHONY: apply-alpha-default-deny-egress
 apply-alpha-default-deny-egress: ## Default-deny EGRESS only in team-alpha.
 	# Block all outgoing traffic from alpha pods; ingress remains governed by existing policies. [web:2][web:1][web:128]
-	kubectl apply -n $(NAMESPACE_ALPHA) -f resources/netpol/team-alpha-default-deny-egress.yaml
+	kubectl apply -n $(NAMESPACE_ALPHA) -f resources/netpol/team-alpha/team-alpha-default-deny-egress.yaml
 
 	# Show policy.
 	kubectl get networkpolicy -n $(NAMESPACE_ALPHA)
@@ -111,13 +112,13 @@ apply-alpha-default-deny-egress: ## Default-deny EGRESS only in team-alpha.
 .PHONY: apply-least-privilege
 apply-least-privilege: ## Allow alpha-client -> alpha-server + DNS egress in team-alpha.
 	# Ingress: alpha-client -> alpha-server on TCP 5678
-	kubectl apply -f resources/netpol/team-alpha-allow-client-to-server.yaml
+	kubectl apply -f resources/netpol/team-alpha/team-alpha-allow-client-to-server.yaml
 
 	# Egress: alpha-client -> alpha-server on TCP 5678
-	kubectl apply -f resources/netpol/team-alpha-allow-client-egress-to-server.yaml
+	kubectl apply -f resources/netpol/team-alpha/team-alpha-allow-client-egress-to-server.yaml
 
 	# Egress: all alpha pods -> CoreDNS (kube-dns) on TCP/UDP 53
-	kubectl apply -f resources/netpol/team-alpha-allow-dns-egress.yaml
+	kubectl apply -f resources/netpol/team-alpha/team-alpha-allow-dns-egress.yaml
 
 	# 1. Check DNS resolution from alpha-client
 	kubectl exec -n $(NAMESPACE_ALPHA) alpha-client -- \
@@ -136,7 +137,7 @@ apply-allow-client-to-server: ## Allow only team-alpha client to reach team-alph
 	#  - alpha-client  -> alpha-server on TCP 5678: ALLOWED
 	#  - beta-client   -> alpha-server: BLOCKED (namespace isolation)
 	#  - any other pod -> alpha-server: BLOCKED
-	kubectl apply -f resources/netpol/team-alpha-allow-client-to-server.yaml
+	kubectl apply -f resources/netpol/team-alpha/team-alpha-allow-client-to-server.yaml
 
 # ------------------------------------------------------------------------------
 # Apply: DNS egress for team-alpha (optional standalone)
@@ -145,7 +146,7 @@ apply-allow-client-to-server: ## Allow only team-alpha client to reach team-alph
 apply-allow-dns-egress: ## Allow DNS egress from team-alpha pods (labels may need adjustment).
 	# NOTE: The actual labels for your cluster's DNS pods may differ.
 	# Adjust namespaceSelector/podSelector if needed. [web:2][web:24]
-	kubectl apply -f resources/netpol/team-alpha-allow-dns-egress.yaml
+	kubectl apply -f resources/netpol/team-alpha/team-alpha-allow-dns-egress.yaml
 
 # ------------------------------------------------------------------------------
 # Test: baseline connectivity (NO NetworkPolicy applied yet)
@@ -335,6 +336,161 @@ test-dns-connectivity: ## Test DNS behavior from team-alpha pods (effect depends
 		echo "Result: DNS + egress appear to be ALLOWED from team-alpha (policy + labels matched)." || \
 		echo "Result: DNS and/or egress still BLOCKED (adjust DNS NetworkPolicy or labels)."
 
+# -------------------------------------------------------------------------------------------------------
+# 				myapp Network Policy
+# -------------------------------------------------------------------------------------------------------
+# target to validate below  assumptions
+# What we are assuming
+# 1. Ingress controller:
+# 		- Namespace ingress-nginx exists.
+# 		- There is a Deployment named ingress-nginx-controller in that namespace.
+# 		- At least one pod in that deployment is Ready.
+
+# 2. myapp:
+# 		- Helm release myapp in namespace team-alpha has created:
+# 			- a Service <release-name>-myapp or myapp depending on your release name and overrides.
+# 		- The Service has port=80 and targetPort=80 (from values.yaml).
+# 		- There is at least one Ready pod matching the Service selector (app.kubernetes.io/name, app.kubernetes.io/instance).
+
+# 3. Postgres:
+# 		- Namespace team-alpha contains a Service postgres.
+# 		- That Service exposes port 5432/TCP.
+#		- Its backing pods have label app=postgres (for your egress podSelector).
+.PHONY: debug-myapp-env
+debug-myapp-env: ## Check assumptions: ingress-nginx controller, myapp service, postgres service.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Checking ingress-nginx controller ==="
+	kubectl get ns ingress-nginx || \
+		printf '$(RED)%s$(RESET)\n' "Namespace ingress-nginx NOT found"
+
+	kubectl get deploy ingress-nginx-controller -n ingress-nginx || \
+		printf '$(RED)%s$(RESET)\n' "Deployment ingress-nginx-controller NOT found in ingress-nginx"
+
+	kubectl get pods -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --show-labels || \
+		printf '$(RED)%s$(RESET)\n' "No pods matching ingress-nginx labels found"
+
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Checking myapp Service and pods in team-alpha ==="
+	kubectl get svc -n $(NAMESPACE_ALPHA) -l app.kubernetes.io/name=myapp --show-labels || \
+		printf '$(RED)%s$(RESET)\n' "myapp Service not found by label app.kubernetes.io/name=myapp"
+
+	kubectl get svc myapp -n $(NAMESPACE_ALPHA) -o wide || \
+		printf '$(RED)%s$(RESET)\n' "Service 'myapp' not found in team-alpha"
+
+	kubectl get endpoints myapp -n $(NAMESPACE_ALPHA) -o wide || \
+		printf '$(RED)%s$(RESET)\n' "Endpoints for Service 'myapp' missing in team-alpha"
+
+	kubectl get pods -n $(NAMESPACE_ALPHA) -l app.kubernetes.io/name=myapp --show-labels || \
+		printf '$(RED)%s$(RESET)\n' "No myapp pods with label app.kubernetes.io/name=myapp"
+
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Checking postgres Service in team-alpha ==="
+	kubectl get svc postgres -n $(NAMESPACE_ALPHA) -o wide || \
+		printf '$(RED)%s$(RESET)\n' "Service 'postgres' not found in team-alpha"
+
+	kubectl get endpoints postgres -n $(NAMESPACE_ALPHA) -o wide || \
+		printf '$(RED)%s$(RESET)\n' "Endpoints for Service 'postgres' missing in team-alpha"
+
+	kubectl get pods -n $(NAMESPACE_ALPHA) -l app=postgres --show-labels || \
+		printf '$(RED)%s$(RESET)\n' "No postgres pods with label app=postgres"
+
+.PHONY: apply-myapp-netpol
+apply-myapp-netpol: ## Apply myapp ingress+egress NetworkPolicies in team-alpha.
+	# Ingress: allow traffic only from ingress-nginx namespace to myapp on port 80/TCP.
+	kubectl apply -f resources/netpol/myapp/myapp-allow-ingress.yaml
+
+	# Egress: allow traffic only from myapp to Postgres pods on port 5432/TCP.
+	kubectl apply -f resources/netpol/myapp/myapp-allow-egress.yaml
+
+	kubectl apply -f resources/netpol/myapp/postgres/myapp-allow-postgres-ingress.yaml
+	# Show policies for confirmation.
+	kubectl get networkpolicy -n $(MYAPP_NS)
+
+# -------------------------------------------------------------------------------------------------------
+#   myapp external payment API egress (ipBlock on TCP 443)
+#   Demonstrates egress to a specific external CIDR with one IP excluded.
+# -------------------------------------------------------------------------------------------------------
+.PHONY: apply-myapp-allow-external-payment-api
+apply-myapp-allow-external-payment-api: ## Allow myapp egress to external payment API CIDR on TCP 443 (ipBlock).
+	# File: resources/netpol/myapp/myapp-allow-external-payment-api.yaml
+	#  - Allows myapp pods (app=myapp) to egress to 203.0.113.0/24 on TCP 443, except 203.0.113.5/32.
+	#  - Pattern for external payment APIs / webhooks using ipBlock. [web:237][web:256]
+	kubectl apply -f resources/netpol/myapp/myapp-allow-external-payment-api.yaml
+
+	# Show policies for confirmation.
+	kubectl get networkpolicy -n $(MYAPP_NS)
+# -------------------------------------------------------------------------------------------------------
+#	 Tests for myapp ingress and egress
+# These tests assume:
+# 	- Ingress controller: ingress-nginx namespace, Deployment ingress-nginx-controller.
+# 	- myapp Service: name myapp in team-alpha, port 80.
+# 	- Postgres: Service postgres in team-alpha, label app=postgres, port 5432.
+# -------------------------------------------------------------------------------------------------------
+# Test myapp ingress
+.PHONY: test-myapp-ingress
+test-myapp-ingress: ## Test myapp ingress: only ingress-nginx can reach myapp:80.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== myapp ingress test (team-alpha) ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: ingress-nginx -> myapp:80 (expect ALLOWED)"
+	MYAPP_HOST="myapp.$(MYAPP_NS).svc.cluster.local"; \
+	kubectl exec -n ingress-nginx deploy/ingress-nginx-controller -- \
+		curl -sS --max-time 5 http://$${MYAPP_HOST}:80 && \
+		printf '$(GREEN)%s$(RESET)\n' "OK: ingress-nginx can reach myapp" || \
+		printf '$(RED)%s$(RESET)\n' "FAILED: ingress-nginx should be allowed to reach myapp"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> myapp:80 (expect BLOCKED)"
+	kubectl exec -n $(NAMESPACE_BETA) beta-client -- \
+		curl -sS --max-time 5 http://myapp.$(MYAPP_NS).svc.cluster.local:80 && \
+		printf '$(RED)%s$(RESET)\n' "FAILED: beta-client should NOT reach myapp" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+# Test myapp egress
+.PHONY: test-myapp-egress
+test-myapp-egress: ## Test myapp egress: only Postgres:5432 should be reachable.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== myapp egress test (team-alpha) ==="
+
+	# Find a myapp pod.
+	MYAPP_POD=$$(kubectl get pod -n $(MYAPP_NS) -l app=myapp -o jsonpath='{.items[0].metadata.name}'); \
+	POSTGRES_SVC="postgres.$(MYAPP_NS).svc.cluster.local"; \
+	echo "MYAPP_POD=$${MYAPP_POD}, POSTGRES_SVC=$${POSTGRES_SVC}"; \
+	kubectl exec -n $(MYAPP_NS) $$MYAPP_POD -- \
+		sh -c "nc -vz $${POSTGRES_SVC} 5432 || curl -sS --connect-timeout 3 --max-time 5 http://$${POSTGRES_SVC}:5432" && \
+		printf '$(GREEN)%s$(RESET)\n' "OK: myapp can reach Postgres:5432" || \
+		printf '$(RED)%s$(RESET)\n' "FAILED: myapp should be allowed to reach Postgres:5432"
+
+# -------------------------------------------------------------------------------------------------------
+#   Debug pod and tests for myapp external payment API egress (ipBlock)
+#   Uses a netshoot pod labelled app=myapp so existing policies apply.
+# -------------------------------------------------------------------------------------------------------
+.PHONY: create-myapp-debug
+create-myapp-debug: ## Create myapp-debug netshoot pod in team-alpha for egress testing.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Creating myapp-debug pod (netshoot, app=myapp) in $(MYAPP_NS) ==="
+	kubectl run myapp-debug \
+	  --image=nicolaka/netshoot \
+	  --restart=Never \
+	  -n $(MYAPP_NS) \
+	  --labels="app=myapp" \
+	  -- sleep 3600
+	kubectl get pod -n $(MYAPP_NS) -l app=myapp --show-labels
+
+.PHONY: delete-myapp-debug
+delete-myapp-debug: ## Delete myapp-debug pod.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Deleting myapp-debug pod in $(MYAPP_NS) ==="
+	kubectl delete pod myapp-debug -n $(MYAPP_NS) --ignore-not-found=true
+
+.PHONY: test-myapp-external-api-egress
+test-myapp-external-api-egress: ## Test myapp external payment API egress (ipBlock) from myapp-debug pod.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== myapp external payment API egress test (team-alpha) ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Selecting a pod with app=myapp label for testing..."
+	DEBUG_POD="$$(kubectl get pod -n $(MYAPP_NS) -l app=myapp -o jsonpath='{.items[0].metadata.name}')"; \
+	printf '$(CYAN)%s$(RESET)\n' "Using pod $$DEBUG_POD"; \
+	printf '$(CYAN)%s$(RESET)\n' "Test 1: Allowed IP 203.0.113.10:443 (within CIDR 203.0.113.0/24, not excluded)"; \
+	kubectl exec -n team-alpha $DEBUG_POD -- nc -vz -w 3 203.0.113.10 443 \
+  			&& printf '$(GREEN)%s$(RESET)\n' "Allowed by policy" \
+  			|| printf '$(GREEN)%s$(RESET)\n' "Connect failed; policy may still have allowed it, but no endpoint is listening"
+	printf '$(CYAN)%s$(RESET)\n' "Test 2: Excluded IP 203.0.113.5:443 (listed in 'except', should be BLOCKED)"; \
+	kubectl exec -n team-alpha $DEBUG_POD -- nc -vz -w 3 203.0.113.5 443 \
+  			&& printf '$(RED)%s$(RESET)\n' "Unexpected: should have been blocked" \
+  			|| printf '$(GREEN)%s$(RESET)\n' "Blocked by policy or endpoint unreachable"
 # ------------------------------------------------------------------------------
 # Cleanup: remove namespaces (and everything inside them)
 # ------------------------------------------------------------------------------
@@ -342,3 +498,4 @@ test-dns-connectivity: ## Test DNS behavior from team-alpha pods (effect depends
 cleanup: ## Delete namespaces team-alpha and team-beta and all related resources.
 	kubectl delete namespace $(NAMESPACE_ALPHA) --ignore-not-found=true
 	kubectl delete namespace $(NAMESPACE_BETA)  --ignore-not-found=true
+

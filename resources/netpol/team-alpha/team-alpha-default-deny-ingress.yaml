@@ -1,4 +1,4 @@
-# netpol/team-alpha-default-deny-ingress.yaml
+# netpol/team-alpha/team-alpha-default-deny-ingress.yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
