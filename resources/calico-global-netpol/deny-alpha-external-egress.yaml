@@ -1,0 +1,18 @@
+apiVersion: crd.projectcalico.org/v1
+kind: GlobalNetworkPolicy
+metadata:
+  name: deny-alpha-external-egress
+spec:
+  order: 100
+  selector: projectcalico.org/namespace == 'team-alpha'
+  types:
+    - Egress
+  egress:
+    - action: Deny
+      protocol: TCP
+      destination:
+        nets:
+          - 0.0.0.0/0
+# This is a standard Calico cluster-wide policy pattern: 
+# select the source pods with selector, define types: Egress, 
+# and deny external destination CIDRs with nets

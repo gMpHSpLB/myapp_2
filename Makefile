@@ -202,3 +202,44 @@ run-myapp-least-privilege-playbook: setup-minikube ## Deploy myapp via Helm and 
 	@printf '$(CYAN)%s$(RESET)\n' "Press ENTER to delete myapp-debug pod..."; \
     read -r _; \
     $(MAKE) -f Makefile_NetworkPolicy delete-myapp-debug
+
+# --------------------------------------------------------------------------------------------
+#                   calico admin policy
+# --------------------------------------------------------------------------------------------
+.PHONY: run-calico-admin-playbook
+run-calico-admin-playbook: setup-minikube ## Optional: Calico GlobalNetworkPolicy admin demo.
+	@printf '$(YELLOW)%s$(RESET)\n' "Step C0. Reset lab (cleanup namespaces and resources)..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to run cleanup..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy cleanup
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step C1. Apply namespaces and baseline pods..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to apply namespaces/pods..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy apply-namespaces; \
+	$(MAKE) -f Makefile_NetworkPolicy apply-pods; \
+	$(MAKE) -f Makefile_NetworkPolicy test-baseline-connectivity
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step C2. Apply Calico external-egress guardrail..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to apply deny-alpha-external-egress..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy calico-admin-apply-deny-alpha-external-egress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step C3. Test Calico external-egress guardrail..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to run tests..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy calico-admin-test-deny-alpha-external-egress
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step C4. Apply Calico namespace-to-namespace guardrail..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to apply deny-alpha-to-beta..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy calico-admin-apply-deny-alpha-to-beta
+
+	@printf '$(YELLOW)%s$(RESET)\n' "Step C5. Test Calico namespace-to-namespace guardrail..." ;\
+	printf '$(CYAN)%s$(RESET)\n' "Press ENTER to run tests..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy calico-admin-test-deny-alpha-to-beta
+
+	@printf '$(CYAN)%s$(RESET)\n' "Press ENTER to cleanup global policies..."; \
+	read -r _; \
+	$(MAKE) -f Makefile_NetworkPolicy calico-admin-cleanup

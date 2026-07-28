@@ -491,6 +491,151 @@ test-myapp-external-api-egress: ## Test myapp external payment API egress (ipBlo
 	kubectl exec -n team-alpha $DEBUG_POD -- nc -vz -w 3 203.0.113.5 443 \
   			&& printf '$(RED)%s$(RESET)\n' "Unexpected: should have been blocked" \
   			|| printf '$(GREEN)%s$(RESET)\n' "Blocked by policy or endpoint unreachable"
+
+# -------------------------------------------------------------------------------------------------
+# Admin stage: Calico cluster-wide guardrails
+# -------------------------------------------------------------------------------------------------
+# This section contains the Calico-based cluster-wide policy demo used in this lab.
+# It is separate from the namespace-scoped NetworkPolicy playbooks.
+#
+# Targets in this section:
+#   - calico-admin-install-crds
+#       Check that the Calico policy API resources are available in the cluster.
+#   - calico-admin-apply-deny-alpha-external-egress
+#       Apply a cluster-wide GlobalNetworkPolicy that blocks external egress from team-alpha.
+#   - calico-admin-test-deny-alpha-external-egress
+#       Verify that team-alpha cannot reach external endpoints, while unrelated traffic still works.
+#   - calico-admin-apply-deny-alpha-to-beta
+#       Apply a cluster-wide GlobalNetworkPolicy that blocks team-alpha -> team-beta on TCP 5678.
+#   - calico-admin-test-deny-alpha-to-beta
+#       Verify that team-alpha cannot reach team-beta on TCP 5678, while beta traffic still works.
+#   - calico-admin-cleanup
+#       Remove the Calico GlobalNetworkPolicy objects after testing.
+#
+# Notes:
+#   - These targets are Calico-native and use GlobalNetworkPolicy.
+#   - They are the working admin-stage for Calico v3.31.3 in this environment.
+#   - The upstream ANP/BANP content is kept separately for future reference.
+# -------------------------------------------------------------------------------------------------
+
+.PHONY: calico-admin-install-crds
+calico-admin-install-crds: ## Check Calico policy API resources available in the cluster.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Checking Calico admin policy API availability ==="
+	kubectl api-resources | grep -i globalnetworkpolicy || true
+	kubectl get crd | grep -i calico || true
+
+.PHONY: calico-admin-apply-deny-alpha-to-beta
+calico-admin-apply-deny-alpha-to-beta: ## Apply Calico GlobalNetworkPolicy deny team-alpha -> team-beta on TCP 5678.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Applying Calico GlobalNetworkPolicy: deny-alpha-to-beta ==="
+	kubectl apply -f resources/calico-global-netpol/deny-alpha-to-beta.yaml
+	kubectl get globalnetworkpolicy
+
+.PHONY: calico-admin-test-deny-alpha-to-beta
+calico-admin-test-deny-alpha-to-beta: ## Test Calico GlobalNetworkPolicy blocks team-alpha -> team-beta on TCP 5678.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Testing Calico GlobalNetworkPolicy: deny-alpha-to-beta ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> beta-server:5678 (expect BLOCKED)"
+	kubectl exec -n team-alpha alpha-client -- \
+		curl -sS --max-time 3 http://beta-server.team-beta.svc.cluster.local:5678 && \
+		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: traffic allowed" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server:5678 (expect ALLOWED)"
+	kubectl exec -n team-beta beta-client -- \
+		curl -sS --max-time 3 http://beta-server:5678 && \
+		printf '$(GREEN)%s$(RESET)\n' "OK: allowed as expected" || \
+		printf '$(RED)%s$(RESET)\n' "FAILED: traffic should be allowed"
+
+.PHONY: calico-admin-apply-deny-alpha-external-egress
+calico-admin-apply-deny-alpha-external-egress: ## Apply Calico GlobalNetworkPolicy deny team-alpha external egress.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Applying Calico GlobalNetworkPolicy: deny-alpha-external-egress ==="
+	kubectl apply -f resources/calico-global-netpol/deny-alpha-external-egress.yaml
+	kubectl get globalnetworkpolicy
+
+.PHONY: calico-admin-test-deny-alpha-external-egress
+calico-admin-test-deny-alpha-external-egress: ## Test Calico GlobalNetworkPolicy blocks team-alpha external egress.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Testing Calico GlobalNetworkPolicy: deny-alpha-external-egress ==="
+
+	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> example.com (expect BLOCKED)"
+	kubectl exec -n team-alpha alpha-client -- \
+		curl -sS --connect-timeout 3 --max-time 5 https://example.com >/dev/null && \
+		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: external egress allowed" || \
+		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+	@echo
+	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server:5678 (expect ALLOWED)"
+	kubectl exec -n team-beta beta-client -- \
+		curl -sS --max-time 3 http://beta-server:5678 && \
+		printf '$(GREEN)%s$(RESET)\n' "OK: allowed as expected" || \
+		printf '$(RED)%s$(RESET)\n' "FAILED: traffic should be allowed"
+
+.PHONY: calico-admin-cleanup
+calico-admin-cleanup: ## Remove Calico GlobalNetworkPolicies used by the admin lab.
+	@printf '$(YELLOW)%s$(RESET)\n' "=== Cleaning up Calico GlobalNetworkPolicies ==="
+	kubectl delete globalnetworkpolicy deny-alpha-to-beta --ignore-not-found=true
+	kubectl delete globalnetworkpolicy deny-alpha-external-egress --ignore-not-found=true
+
+# # ----------------------------------------------------------------------------------------------------------------
+# .PHONY: calico-admin-install-crds
+# calico-admin-install-crds: ## Install Calico policy API resources needed for GlobalNetworkPolicy.
+# 	@printf '$(YELLOW)%s$(RESET)\n' "=== Checking Calico admin policy API availability ==="
+# 	kubectl api-resources | grep -i globalnetworkpolicy || true
+# 	kubectl get crd | grep -i calico || true
+
+# .PHONY: calico-admin-apply-deny-alpha-to-beta
+# calico-admin-apply-deny-alpha-to-beta: ## Apply Calico GlobalNetworkPolicy deny team-alpha -> team-beta on TCP 5678.
+# 	@printf '$(YELLOW)%s$(RESET)\n' "=== Applying Calico GlobalNetworkPolicy: deny-alpha-to-beta ==="
+# 	kubectl apply -f resources/calico-global-netpol/deny-alpha-to-beta.yaml
+# 	kubectl get globalnetworkpolicy
+
+# .PHONY: calico-admin-test-deny-alpha-to-beta
+# calico-admin-test-deny-alpha-to-beta: ## Test Calico GlobalNetworkPolicy blocks team-alpha -> team-beta on TCP 5678.
+# 	@printf '$(YELLOW)%s$(RESET)\n' "=== Testing Calico GlobalNetworkPolicy: deny-alpha-to-beta ==="
+
+# 	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> beta-server:5678 (expect BLOCKED)"
+# 	kubectl exec -n team-alpha alpha-client -- \
+# 		curl -sS --max-time 3 http://beta-server.team-beta.svc.cluster.local:5678 && \
+# 		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: traffic allowed" || \
+# 		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+# 	@echo
+# 	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server:5678 (expect ALLOWED)"
+# 	kubectl exec -n team-beta beta-client -- \
+# 		curl -sS --max-time 3 http://beta-server:5678 && \
+# 		printf '$(GREEN)%s$(RESET)\n' "OK: allowed as expected" || \
+# 		printf '$(RED)%s$(RESET)\n' "FAILED: traffic should be allowed"
+
+
+# .PHONY: calico-admin-apply-deny-alpha-external-egress
+# calico-admin-apply-deny-alpha-external-egress: ## Apply Calico GlobalNetworkPolicy deny team-alpha external egress.
+# 	@printf '$(YELLOW)%s$(RESET)\n' "=== Applying Calico GlobalNetworkPolicy: deny-alpha-external-egress ==="
+# 	kubectl apply -f resources/calico-global-netpol/deny-alpha-external-egress.yaml
+# 	kubectl get globalnetworkpolicy
+
+# .PHONY: calico-admin-test-deny-alpha-external-egress
+# calico-admin-test-deny-alpha-external-egress: ## Test Calico GlobalNetworkPolicy blocks team-alpha external egress.
+# 	@printf '$(YELLOW)%s$(RESET)\n' "=== Testing Calico GlobalNetworkPolicy: deny-alpha-external-egress ==="
+
+# 	@printf '$(CYAN)%s$(RESET)\n' "Test 1: alpha-client -> example.com (expect BLOCKED)"
+# 	kubectl exec -n team-alpha alpha-client -- \
+# 		curl -sS --connect-timeout 3 --max-time 5 https://example.com >/dev/null && \
+# 		printf '$(RED)%s$(RESET)\n' "UNEXPECTED: external egress allowed" || \
+# 		printf '$(GREEN)%s$(RESET)\n' "OK: blocked as expected"
+
+# 	@echo
+# 	@printf '$(CYAN)%s$(RESET)\n' "Test 2: beta-client -> beta-server:5678 (expect ALLOWED)"
+# 	kubectl exec -n team-beta beta-client -- \
+# 		curl -sS --max-time 3 http://beta-server:5678 && \
+# 		printf '$(GREEN)%s$(RESET)\n' "OK: allowed as expected" || \
+# 		printf '$(RED)%s$(RESET)\n' "FAILED: traffic should be allowed"
+
+# .PHONY: calico-admin-cleanup
+# calico-admin-cleanup: ## Remove Calico GlobalNetworkPolicies used by the admin lab.
+# 	@printf '$(YELLOW)%s$(RESET)\n' "=== Cleaning up Calico GlobalNetworkPolicies ==="
+# 	kubectl delete globalnetworkpolicy deny-alpha-to-beta --ignore-not-found=true
+# 	kubectl delete globalnetworkpolicy deny-alpha-external-egress --ignore-not-found=true
+
 # ------------------------------------------------------------------------------
 # Cleanup: remove namespaces (and everything inside them)
 # ------------------------------------------------------------------------------

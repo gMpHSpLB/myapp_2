@@ -1,0 +1,21 @@
+apiVersion: crd.projectcalico.org/v1
+kind: GlobalNetworkPolicy
+metadata:
+  name: deny-alpha-to-beta
+spec:
+  order: 100
+  selector: projectcalico.org/namespace == 'team-alpha'
+  types:
+    - Egress
+  egress:
+    - action: Deny
+      protocol: TCP
+      destination:
+        namespaceSelector: projectcalico.org/namespace == 'team-beta'
+        ports:
+          - 5678
+# Why this works
+#   GlobalNetworkPolicy is cluster-scoped in Calico.
+#   The selector targets pods in team-alpha.
+#   The egress rule denies traffic to pods in team-beta on TCP 5678.
+

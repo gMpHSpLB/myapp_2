@@ -240,3 +240,5 @@ Never assume NetworkPolicy objects are enforced just because you can create them
 **Practical Exercise** : 
     Check [Basic NetworkPolicy Implementation](Readme-basic-networkpolicy-exercise.md)
     Check [NetworkPolicies: Default Deny & Least Privilege with myapp and postgres.md](Readme-NetworkPolicies-Default-Deny-and-Least-Privilege-with-myapp-and-postgres.md)
+    For cluster-wide guardrails using Calico GlobalNetworkPolicy, see
+[Readme-Admin-NETPOL-Using-calico.md](Readme-Admin-NETPOL-Using-calico.md).
